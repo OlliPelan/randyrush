@@ -1,0 +1,604 @@
+function App() {
+  const [board, setBoard] = React.useState([]);
+  const [selectedGem, setSelectedGem] = React.useState(null);
+  const [score, setScore] = React.useState(0);
+  const [moves, setMoves] = React.useState(30);
+  const [isAnimating, setIsAnimating] = React.useState(false);
+  const [particles, setParticles] = React.useState([]);
+  const [combo, setCombo] = React.useState(0);
+  const [showCombo, setShowCombo] = React.useState(false);
+
+  const gemTypes = [
+    { emoji: '💎', color: '#00d4ff', id: 0 },
+    { emoji: '💚', color: '#00ff88', id: 1 },
+    { emoji: '💛', color: '#ffd700', id: 2 },
+    { emoji: '🔴', color: '#ff4757', id: 3 },
+    { emoji: '💜', color: '#a55eea', id: 4 }
+  ];
+  
+  const BOARD_SIZE = 8;
+
+  // Lock orientation upright
+  React.useEffect(() => {
+    if (screen.orientation && screen.orientation.lock) {
+      screen.orientation.lock('portrait').catch(() => {});
+    }
+  }, []);
+
+  // Initialize board without matches
+  React.useEffect(() => {
+    initializeBoard();
+  }, []);
+
+  const initializeBoard = () => {
+    let newBoard = [];
+    for (let row = 0; row < BOARD_SIZE; row++) {
+      const newRow = [];
+      for (let col = 0; col < BOARD_SIZE; col++) {
+        let gemType;
+        let attempts = 0;
+        do {
+          gemType = gemTypes[Math.floor(Math.random() * gemTypes.length)];
+          attempts++;
+        } while (
+          attempts < 50 &&
+          ((col >= 2 && newRow[col - 1]?.type.id === gemType.id && newRow[col - 2]?.type.id === gemType.id) ||
+          (row >= 2 && newBoard[row - 1]?.[col]?.type.id === gemType.id && newBoard[row - 2]?.[col]?.type.id === gemType.id))
+        );
+        
+        newRow.push({
+          type: gemType,
+          id: `${row}-${col}-${Date.now()}-${Math.random()}`,
+          matched: false
+        });
+      }
+      newBoard.push(newRow);
+    }
+    setBoard(newBoard);
+    setIsAnimating(false);
+  };
+
+  const playSound = (type, frequency = 1) => {
+    try {
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      
+      if (type === 'match') {
+        oscillator.frequency.value = 600 * frequency;
+        gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.4);
+        oscillator.start(audioContext.currentTime);
+        oscillator.stop(audioContext.currentTime + 0.4);
+      } else if (type === 'swap') {
+        oscillator.frequency.value = 300;
+        gainNode.gain.setValueAtTime(0.15, audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
+        oscillator.start(audioContext.currentTime);
+        oscillator.stop(audioContext.currentTime + 0.1);
+      } else if (type === 'invalid') {
+        oscillator.frequency.value = 150;
+        gainNode.gain.setValueAtTime(0.2, audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.15);
+        oscillator.start(audioContext.currentTime);
+        oscillator.stop(audioContext.currentTime + 0.15);
+      } else if (type === 'combo') {
+        oscillator.frequency.value = 1000;
+        gainNode.gain.setValueAtTime(0.4, audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+        oscillator.start(audioContext.currentTime);
+        oscillator.stop(audioContext.currentTime + 0.5);
+      }
+    } catch (e) {
+      // Audio context failed, continue silently
+    }
+  };
+
+  const createParticles = (row, col, color) => {
+    const newParticles = [];
+    for (let i = 0; i < 12; i++) {
+      newParticles.push({
+        id: `${row}-${col}-${i}-${Date.now()}-${Math.random()}`,
+        x: col * 45 + 22,
+        y: row * 45 + 22,
+        angle: (Math.PI * 2 * i) / 12,
+        color: color
+      });
+    }
+    setParticles(prev => [...prev, ...newParticles]);
+    setTimeout(() => {
+      setParticles(prev => prev.filter(p => !newParticles.some(np => np.id === p.id)));
+    }, 800);
+  };
+
+  const findMatches = (testBoard) => {
+    const matched = Array(BOARD_SIZE).fill(null).map(() => Array(BOARD_SIZE).fill(false));
+
+    // Check horizontal matches (3 or more)
+    for (let row = 0; row < BOARD_SIZE; row++) {
+      let matchStart = 0;
+      for (let col = 1; col <= BOARD_SIZE; col++) {
+        // Check if match continues or ends
+        if (col === BOARD_SIZE || testBoard[row][col].type.id !== testBoard[row][matchStart].type.id) {
+          const matchLength = col - matchStart;
+          if (matchLength >= 3) {
+            // Mark all matched gems
+            for (let i = matchStart; i < col; i++) {
+              matched[row][i] = true;
+            }
+          }
+          matchStart = col;
+        }
+      }
+    }
+
+    // Check vertical matches (3 or more)
+    for (let col = 0; col < BOARD_SIZE; col++) {
+      let matchStart = 0;
+      for (let row = 1; row <= BOARD_SIZE; row++) {
+        // Check if match continues or ends
+        if (row === BOARD_SIZE || testBoard[row][col].type.id !== testBoard[matchStart][col].type.id) {
+          const matchLength = row - matchStart;
+          if (matchLength >= 3) {
+            // Mark all matched gems
+            for (let i = matchStart; i < row; i++) {
+              matched[i][col] = true;
+            }
+          }
+          matchStart = row;
+        }
+      }
+    }
+
+    const matchList = [];
+    for (let row = 0; row < BOARD_SIZE; row++) {
+      for (let col = 0; col < BOARD_SIZE; col++) {
+        if (matched[row][col]) {
+          matchList.push({ row, col });
+        }
+      }
+    }
+
+    return matchList;
+  };
+
+  const handleGemClick = (e, row, col) => {
+    e.preventDefault();
+    if (isAnimating || moves <= 0) return;
+
+    if (!selectedGem) {
+      setSelectedGem({ row, col });
+      playSound('swap');
+    } else {
+      // If clicking the same gem, unselect it
+      if (selectedGem.row === row && selectedGem.col === col) {
+        setSelectedGem(null);
+        playSound('swap');
+        return;
+      }
+
+      const rowDiff = Math.abs(selectedGem.row - row);
+      const colDiff = Math.abs(selectedGem.col - col);
+
+      if ((rowDiff === 1 && colDiff === 0) || (rowDiff === 0 && colDiff === 1)) {
+        attemptSwap(selectedGem.row, selectedGem.col, row, col);
+      } else {
+        setSelectedGem({ row, col });
+        playSound('swap');
+      }
+    }
+  };
+
+  const attemptSwap = (row1, col1, row2, col2) => {
+    setIsAnimating(true);
+    
+    const newBoard = board.map(row => row.map(cell => ({ ...cell })));
+    
+    // Swap
+    const temp = newBoard[row1][col1];
+    newBoard[row1][col1] = newBoard[row2][col2];
+    newBoard[row2][col2] = temp;
+
+    const matches = findMatches(newBoard);
+    
+    if (matches.length > 0) {
+      setBoard(newBoard);
+      setSelectedGem(null);
+      setMoves(prev => prev - 1);
+      playSound('swap');
+      
+      setTimeout(() => {
+        processMatches(newBoard, 1);
+      }, 300);
+    } else {
+      playSound('invalid');
+      setSelectedGem(null);
+      setIsAnimating(false);
+    }
+  };
+
+  const processMatches = (currentBoard, currentCombo) => {
+    const matches = findMatches(currentBoard);
+    
+    if (matches.length > 0) {
+      setCombo(currentCombo);
+      setShowCombo(true);
+      
+      playSound('match', 1 + currentCombo * 0.2);
+      if (currentCombo > 1) {
+        playSound('combo');
+      }
+      
+      setTimeout(() => setShowCombo(false), 1000);
+
+      let newBoard = currentBoard.map(row => row.map(cell => ({ ...cell })));
+      
+      matches.forEach(({ row, col }) => {
+        newBoard[row][col].matched = true;
+        createParticles(row, col, newBoard[row][col].type.color);
+      });
+
+      setBoard(newBoard);
+      setScore(prev => prev + matches.length * 10 * currentCombo);
+      
+      setTimeout(() => {
+        removeMatchedAndDrop(newBoard, currentCombo);
+      }, 500);
+    } else {
+      setCombo(0);
+      setIsAnimating(false);
+    }
+  };
+
+  const removeMatchedAndDrop = (currentBoard, currentCombo) => {
+    let newBoard = currentBoard.map(row => row.map(cell => ({ ...cell })));
+
+    // Drop existing gems and fill from top
+    for (let col = 0; col < BOARD_SIZE; col++) {
+      const column = [];
+      
+      // Collect non-matched gems from bottom to top
+      for (let row = BOARD_SIZE - 1; row >= 0; row--) {
+        if (!newBoard[row][col].matched) {
+          column.push(newBoard[row][col]);
+        }
+      }
+      
+      // Fill with new gems at the top
+      while (column.length < BOARD_SIZE) {
+        column.push({
+          type: gemTypes[Math.floor(Math.random() * gemTypes.length)],
+          id: `new-${col}-${Date.now()}-${Math.random()}`,
+          matched: false
+        });
+      }
+      
+      // Place back into board (reverse to put at correct positions)
+      for (let row = 0; row < BOARD_SIZE; row++) {
+        newBoard[row][col] = column[BOARD_SIZE - 1 - row];
+      }
+    }
+
+    setBoard(newBoard);
+    
+    // Check for new matches after a delay
+    setTimeout(() => {
+      const newMatches = findMatches(newBoard);
+      if (newMatches.length > 0) {
+        processMatches(newBoard, currentCombo + 1);
+      } else {
+        setCombo(0);
+        setIsAnimating(false);
+      }
+    }, 400);
+  };
+
+  const resetGame = () => {
+    setScore(0);
+    setMoves(30);
+    setCombo(0);
+    setSelectedGem(null);
+    setParticles([]);
+    setIsAnimating(false);
+    initializeBoard();
+  };
+
+  return (
+    <div style={{
+      minHeight: '100vh',
+      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      padding: '10px',
+      fontFamily: 'Arial, sans-serif',
+      overflow: 'hidden',
+      position: 'relative',
+      touchAction: 'manipulation'
+    }}>
+      {/* Header */}
+      <div style={{
+        background: 'rgba(255, 255, 255, 0.95)',
+        borderRadius: '15px',
+        padding: '15px 25px',
+        marginBottom: '15px',
+        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)',
+        width: '90%',
+        maxWidth: '380px'
+      }}>
+        <h1 style={{
+          margin: '0 0 10px 0',
+          fontSize: '28px',
+          textAlign: 'center',
+          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+          WebkitBackgroundClip: 'text',
+          WebkitTextFillColor: 'transparent',
+          fontWeight: 'bold'
+        }}>💎 Bejeweled 💎</h1>
+        
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-around',
+          fontSize: '18px',
+          fontWeight: 'bold'
+        }}>
+          <div style={{ color: '#667eea' }}>Score: {score}</div>
+          <div style={{ color: '#764ba2' }}>Moves: {moves}</div>
+        </div>
+      </div>
+
+      {/* Combo Display */}
+      {showCombo && combo > 1 && (
+        <div style={{
+          position: 'fixed',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          fontSize: '48px',
+          fontWeight: 'bold',
+          color: '#ffd700',
+          textShadow: '0 0 20px rgba(255, 215, 0, 0.8), 0 0 40px rgba(255, 215, 0, 0.6)',
+          zIndex: 1000,
+          animation: 'combo-pop 1s ease-out',
+          pointerEvents: 'none'
+        }}>
+          {combo}x COMBO! 🔥
+        </div>
+      )}
+
+      {/* Game Board */}
+      <div style={{
+        background: 'rgba(255, 255, 255, 0.95)',
+        borderRadius: '15px',
+        padding: '10px',
+        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)',
+        position: 'relative',
+        width: '90%',
+        maxWidth: '380px',
+        boxSizing: 'border-box'
+      }}>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: `repeat(${BOARD_SIZE}, 1fr)`,
+          gap: '2px',
+          position: 'relative'
+        }}>
+          {board.map((row, rowIndex) =>
+            row.map((gem, colIndex) => {
+              const isSelected = selectedGem?.row === rowIndex && selectedGem?.col === colIndex;
+              const gemKey = `${rowIndex}-${colIndex}`;
+              return (
+                <div
+                  key={gem.id}
+                  data-gem={gemKey}
+                  onTouchStart={(e) => handleGemClick(e, rowIndex, colIndex)}
+                  onClick={(e) => handleGemClick(e, rowIndex, colIndex)}
+                  style={{
+                    aspectRatio: '1',
+                    background: isSelected
+                      ? `linear-gradient(135deg, ${gem.type.color}, #ffffff)`
+                      : `linear-gradient(135deg, ${gem.type.color}, ${gem.type.color}dd)`,
+                    borderRadius: '10px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '26px',
+                    cursor: 'pointer',
+                    boxShadow: isSelected
+                      ? `0 0 20px ${gem.type.color}, 0 0 40px ${gem.type.color}88`
+                      : `0 4px 12px ${gem.type.color}44`,
+                    border: '3px solid',
+                    borderColor: isSelected ? '#ffffff' : 'rgba(255, 255, 255, 0.5)',
+                    touchAction: 'manipulation',
+                    boxSizing: 'border-box'
+                  }}
+                  className={gem.matched ? 'gem-matched' : ''}
+                >
+                  {gem.type.emoji}
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Particles */}
+        {particles.map(particle => (
+          <div
+            key={particle.id}
+            style={{
+              position: 'absolute',
+              left: particle.x,
+              top: particle.y,
+              width: '10px',
+              height: '10px',
+              borderRadius: '50%',
+              background: particle.color,
+              boxShadow: `0 0 10px ${particle.color}`,
+              animation: `particle-burst-${Math.floor(Math.random() * 3)} 0.8s ease-out forwards`,
+              transform: `translate(-50%, -50%) rotate(${particle.angle}rad)`,
+              pointerEvents: 'none',
+              zIndex: 100
+            }}
+          />
+        ))}
+      </div>
+
+      {/* Reset Button */}
+      <button
+        onClick={resetGame}
+        style={{
+          marginTop: '20px',
+          padding: '15px 40px',
+          fontSize: '18px',
+          fontWeight: 'bold',
+          background: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
+          color: 'white',
+          border: 'none',
+          borderRadius: '25px',
+          cursor: 'pointer',
+          boxShadow: '0 4px 15px rgba(0, 0, 0, 0.3)',
+          transition: 'transform 0.2s',
+          width: '90%',
+          maxWidth: '380px',
+          touchAction: 'manipulation'
+        }}
+        onMouseDown={(e) => e.target.style.transform = 'scale(0.95)'}
+        onMouseUp={(e) => e.target.style.transform = 'scale(1)'}
+        onMouseLeave={(e) => e.target.style.transform = 'scale(1)'}
+        onTouchStart={(e) => e.target.style.transform = 'scale(0.95)'}
+        onTouchEnd={(e) => e.target.style.transform = 'scale(1)'}
+      >
+        🔄 New Game
+      </button>
+
+      {/* Game Over Overlay */}
+      {moves === 0 && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.85)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000,
+          animation: 'fade-in 0.3s ease-out'
+        }}>
+          <div style={{
+            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            padding: '40px',
+            borderRadius: '20px',
+            textAlign: 'center',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)',
+            color: 'white'
+          }}>
+            <h2 style={{ fontSize: '36px', margin: '0 0 20px 0' }}>💎 Game Over! 💎</h2>
+            <p style={{ fontSize: '28px', margin: '0 0 30px 0', fontWeight: 'bold' }}>
+              Final Score: {score}
+            </p>
+            <button
+              onClick={resetGame}
+              style={{
+                padding: '15px 40px',
+                fontSize: '18px',
+                fontWeight: 'bold',
+                background: 'white',
+                color: '#667eea',
+                border: 'none',
+                borderRadius: '25px',
+                cursor: 'pointer',
+                boxShadow: '0 4px 15px rgba(0, 0, 0, 0.3)',
+                touchAction: 'manipulation'
+              }}
+            >
+              Play Again
+            </button>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes particle-burst-0 {
+          0% {
+            transform: translate(-50%, -50%) translateX(0) translateY(0) scale(1);
+            opacity: 1;
+          }
+          100% {
+            transform: translate(-50%, -50%) translateX(50px) translateY(50px) scale(0);
+            opacity: 0;
+          }
+        }
+        
+        @keyframes particle-burst-1 {
+          0% {
+            transform: translate(-50%, -50%) translateX(0) translateY(0) scale(1);
+            opacity: 1;
+          }
+          100% {
+            transform: translate(-50%, -50%) translateX(60px) translateY(30px) scale(0);
+            opacity: 0;
+          }
+        }
+        
+        @keyframes particle-burst-2 {
+          0% {
+            transform: translate(-50%, -50%) translateX(0) translateY(0) scale(1);
+            opacity: 1;
+          }
+          100% {
+            transform: translate(-50%, -50%) translateX(40px) translateY(60px) scale(0);
+            opacity: 0;
+          }
+        }
+        
+        @keyframes combo-pop {
+          0% {
+            transform: translate(-50%, -50%) scale(0);
+            opacity: 0;
+          }
+          50% {
+            transform: translate(-50%, -50%) scale(1.2);
+            opacity: 1;
+          }
+          100% {
+            transform: translate(-50%, -50%) scale(1);
+            opacity: 0;
+          }
+        }
+        
+        @keyframes fade-in {
+          from {
+            opacity: 0;
+          }
+          to {
+            opacity: 1;
+          }
+        }
+        
+        .gem-matched {
+          transition: transform 0.5s cubic-bezier(0.68, -0.55, 0.265, 1.55), opacity 0.5s ease-out !important;
+          transform: scale(0) rotate(180deg) !important;
+          opacity: 0 !important;
+        }
+        
+        * {
+          -webkit-tap-highlight-color: transparent;
+          user-select: none;
+          -webkit-user-select: none;
+          -moz-user-select: none;
+          -ms-user-select: none;
+          box-sizing: border-box;
+        }
+        
+        html {
+          touch-action: manipulation;
+        }
+      `}</style>
+    </div>
+  );
+}
